@@ -1,0 +1,122 @@
+/* InstaLeads: спільна база для демо-макетів (профіль §12-A, hero схема C, type-led без фото).
+   Токени кольорів і шрифтів кожного макета лежать у його tokens.css. */
+
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-text), system-ui, sans-serif;
+  font-size: clamp(15px, 1.1vw, 18px);
+  line-height: 1.6;
+  overflow-x: hidden;
+}
+:root {
+  --ease: cubic-bezier(.22, 1, .36, 1);
+  --gutter: clamp(16px, 4vw, 56px);
+  --s1: 8px; --s2: 16px; --s3: 24px; --s4: 40px; --s5: 64px; --s6: 104px;
+  --radius: 999px;
+}
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+h1, h2 { font-family: var(--font-display), serif; font-weight: var(--display-weight); margin: 0; text-wrap: balance; hyphens: none; }
+h1 { font-size: clamp(2.6rem, 8vw, 9rem); line-height: .9; letter-spacing: -.03em; }
+h2 { font-size: clamp(2rem, 5.5vw, 5rem); line-height: .95; letter-spacing: -.025em; }
+p { margin: 0; max-width: 56ch; text-wrap: pretty; }
+.label { font-size: 12px; text-transform: uppercase; letter-spacing: .18em; opacity: .75; margin: 0; }
+.muted { opacity: .75; }
+
+/* ---------- header */
+.top {
+  position: absolute; inset: 0 0 auto 0; z-index: 2;
+  display: flex; justify-content: space-between; align-items: center; gap: var(--s2);
+  padding: var(--s3) var(--gutter);
+}
+.logo { font-family: var(--font-display), serif; font-size: 20px; text-decoration: none; letter-spacing: -.01em; }
+.top nav { display: flex; gap: var(--s3); }
+.top nav a { text-decoration: none; font-size: 14px; opacity: .75; padding: 12px 0; }
+.top nav a:hover { opacity: 1; }
+
+/* ---------- hero, схема C: 60/40, текст у нижній третині ліворуч, якір праворуч до краю */
+.hero {
+  min-height: 100svh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+.hero-anchor {
+  background: var(--surface);
+  padding: calc(var(--s6) + var(--s1)) var(--gutter) var(--s3);
+  display: flex; flex-direction: column; justify-content: flex-end; gap: var(--s1);
+}
+.hero-text {
+  display: flex; flex-direction: column; justify-content: flex-end; gap: var(--s3);
+  padding: var(--s4) var(--gutter) var(--s5);
+}
+.hero .lead { font-size: clamp(16px, 1.4vw, 21px); opacity: .75; max-width: 40ch; }
+.ctas { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+
+.anchor-number { font-family: var(--font-display), serif; font-size: clamp(3.2rem, 9vw, 8rem); line-height: .9; letter-spacing: -.03em; }
+.anchor-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.anchor-list li { display: flex; gap: var(--s2); align-items: baseline; font-size: clamp(16px, 1.6vw, 22px); }
+.anchor-list .num, .svc .num { font-size: 12px; letter-spacing: .18em; opacity: .75; min-width: 2.4em; }
+
+@media (min-width: 900px) {
+  .hero { grid-template-columns: 60fr 40fr; grid-template-rows: 1fr; }
+  .hero-text { grid-column: 1; grid-row: 1; padding-top: var(--s6); padding-bottom: var(--s6); }
+  .hero-anchor { grid-column: 2; grid-row: 1; padding: var(--s6) var(--gutter); }
+  .top nav a { font-size: 15px; }
+}
+@media (max-width: 899px) {
+  .hero-anchor { grid-row: 1; padding-top: 88px; max-height: 34svh; overflow: hidden; }
+  .hero-text { grid-row: 2; }
+  .anchor-list li:nth-child(n+4) { display: none; }
+  .top nav { gap: var(--s2); }
+  .top nav a:not(:last-child) { display: none; }
+}
+
+/* ---------- кнопки: суцільна пілюля / прозора з волосяною лінією; заливка-шар зліва */
+.btn {
+  position: relative; isolation: isolate; overflow: hidden;
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 48px; padding: 0 26px; border-radius: var(--radius);
+  font-size: 15px; text-decoration: none; white-space: nowrap;
+  transition: color 320ms var(--ease);
+}
+.btn::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  transform: scaleX(0); transform-origin: left;
+  transition: transform 500ms var(--ease);
+}
+.btn:hover::before, .btn:focus-visible::before { transform: scaleX(1); }
+.btn-solid { background: var(--accent); color: var(--on-accent); }
+.btn-solid::before { background: var(--text); }
+.btn-solid:hover, .btn-solid:focus-visible { color: var(--bg); }
+.btn-line { box-shadow: inset 0 0 0 1px currentColor; color: var(--text); }
+.btn-line::before { background: var(--accent); }
+.btn-line:hover, .btn-line:focus-visible { color: var(--on-accent); }
+
+/* ---------- секції */
+section.block { padding: var(--s6) var(--gutter); display: grid; gap: var(--s4); }
+@media (min-width: 900px) { section.block { grid-template-columns: 4fr 8fr; align-items: start; } }
+.svc { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--hair); }
+.svc li { display: grid; grid-template-columns: auto 1fr; gap: 4px var(--s2); padding: var(--s2) 0; border-bottom: 1px solid var(--hair); }
+.svc .name { font-size: clamp(17px, 1.5vw, 22px); }
+.svc .note { grid-column: 2; font-size: 14px; opacity: .75; }
+.about-text { display: grid; gap: var(--s2); }
+.contacts { background: var(--surface); }
+.contact-list { list-style: none; margin: 0 0 var(--s4); padding: 0; display: grid; gap: var(--s2); }
+.contact-list a { display: inline-flex; min-height: 44px; align-items: center; text-underline-offset: 4px; }
+.contact-list .label { display: block; margin-bottom: 2px; }
+footer { padding: var(--s4) var(--gutter); font-size: 13px; opacity: .75; }
+
+/* ---------- вхідна анімація hero */
+@keyframes rise { from { opacity: 0; transform: translateY(28px); filter: blur(14px); } to { opacity: 1; transform: none; filter: none; } }
+.enter { animation: rise 900ms var(--ease) both; }
+.d-logo { animation-delay: 300ms; } .d-nav { animation-delay: 420ms; }
+.d-h1 { animation-delay: 900ms; } .d-sub { animation-delay: 1040ms; } .d-cta { animation-delay: 1200ms; }
+@media (prefers-reduced-motion: reduce) {
+  .enter { animation: none; }
+  .btn, .btn::before { transition: none; }
+  html { scroll-behavior: auto; }
+}

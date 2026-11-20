@@ -1,0 +1,11 @@
+:root {
+  --bg: #ECEFEA;
+  --surface: #DFE4DE;
+  --text: #14191B;
+  --accent: #1E5A47;
+  --on-accent: #ECEFEA;
+  --hair: rgba(20,25,27,.18);
+  --font-display: 'Wix Madefor Display';
+  --font-text: 'Wix Madefor Text';
+  --display-weight: 500;
+}
