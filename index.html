@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#111214">
 <title>InstaLeads</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d9603b'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='white' font-family='sans-serif'%3EL%3C/text%3E%3C/svg%3E">
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
 <header class="bar">
@@ -17,29 +17,55 @@
 
 <main class="wrap">
   <section class="control" aria-label="Пошук">
-    <div class="count" role="radiogroup" aria-label="Скільки бізнесів шукати">
-      <label><input type="radio" name="count" value="15"><span>15</span></label>
-      <label><input type="radio" name="count" value="20" checked><span>20</span></label>
-      <label><input type="radio" name="count" value="30"><span>30</span></label>
+    <div class="count">
+      <label for="count" class="count-label">Скільки бізнесів шукати <output id="count-out" for="count">20</output></label>
+      <input type="range" id="count" min="1" max="30" step="1" value="20">
     </div>
     <button class="primary big" id="btn-parse" type="button">Почати пошук</button>
-    <div class="timer" aria-live="polite">
+    <div class="timer">
       <span id="timer">00:00</span>
-      <span id="run-status" class="muted">Готово до пошуку</span>
+      <span id="run-status" class="muted" aria-live="polite">Готово до пошуку</span>
+    </div>
+    <div class="progress" id="progress" role="progressbar" aria-label="Прогрес пошуку"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden>
+      <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+        <circle class="ring-bg" cx="60" cy="60" r="52"/>
+        <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"/>
+      </svg>
+      <span class="ring-pct" id="ring-pct">0%</span>
+      <span class="small muted ring-label" id="ring-label"></span>
     </div>
     <p class="muted small" id="last-run"></p>
   </section>
 
-  <section class="tools" aria-label="Фільтри">
-    <label class="switch"><input type="checkbox" id="hide-closed" checked> Сховати відмови й клієнтів</label>
-    <label class="switch"><input type="checkbox" id="only-followup"> Тільки на фолоуап</label>
-    <span class="muted small" id="counter"></span>
+  <section class="actions" aria-label="Дії">
+    <button class="ghost" id="btn-history" type="button" aria-haspopup="dialog">Історія пошуків</button>
+    <button class="ghost" id="btn-clear" type="button" aria-haspopup="dialog">Очистити все</button>
+    <label class="switch push"><input type="checkbox" id="no-confirm"> Видаляти без підтвердження</label>
+  </section>
+
+  <section class="insight" id="insight" aria-label="Висновки тижня" hidden></section>
+
+  <section class="tools" aria-label="Пошук і фільтри">
+    <input type="search" id="q" class="search" placeholder="Назва, @нік або місто" aria-label="Пошук за назвою, ніком або містом" autocomplete="off" spellcheck="false">
+    <div class="filters" role="group" aria-label="Фільтр за статусом">
+      <button type="button" class="fchip" data-f="all">Усі</button>
+      <button type="button" class="fchip" data-f="new" aria-pressed="false">Нові</button>
+      <button type="button" class="fchip" data-f="wrote" aria-pressed="false">Написав</button>
+      <button type="button" class="fchip" data-f="followup" aria-pressed="false">Фолоуап</button>
+      <button type="button" class="fchip" data-f="replied" aria-pressed="false">Відповів</button>
+      <button type="button" class="fchip" data-f="refused" aria-pressed="false">Відмова</button>
+      <button type="button" class="fchip" data-f="client" aria-pressed="false">Клієнт</button>
+    </div>
+    <span class="muted small" id="counter" aria-live="polite"></span>
   </section>
 
   <p class="notice" id="notice" hidden></p>
-  <div class="grid" id="grid" aria-live="polite"></div>
+  <div class="grid" id="grid"></div>
   <section class="stats" id="stats" hidden></section>
 </main>
+
+<footer class="foot muted small" id="alltime" hidden></footer>
 
 <div class="sendbar" id="sendbar" hidden>
   <span id="send-count"></span>
@@ -89,7 +115,29 @@
   </div>
 </dialog>
 
-<div class="toast" id="toast" role="status" hidden></div>
-<script src="script.js?v=4"></script>
+<dialog id="dlg-confirm" class="sheet small-sheet" aria-labelledby="confirm-title">
+  <div class="sheet-head">
+    <h2 id="confirm-title"></h2>
+  </div>
+  <p id="confirm-text"></p>
+  <div class="row">
+    <button class="primary" id="btn-confirm-ok" type="button"></button>
+    <button class="ghost" type="button" data-close autofocus>Скасувати</button>
+  </div>
+</dialog>
+
+<dialog id="dlg-history" class="sheet" aria-labelledby="hist-title">
+  <div class="sheet-head">
+    <h2 id="hist-title">Історія пошуків</h2>
+    <button class="icon" type="button" data-close aria-label="Закрити">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div class="table-scroll" id="hist-body"></div>
+  <p class="muted small">Без сайту: скільки бізнесів без сайту знайдено на Google Maps і перевірено далі. Відповіли: «Відповів» або «Клієнт», і серед уже прибраних з панелі теж.</p>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden><span id="toast-text"></span><button type="button" id="toast-act" hidden></button></div>
+<script src="script.js?v=5"></script>
 </body>
 </html>

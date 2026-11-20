@@ -59,23 +59,53 @@ button { cursor: pointer; border: 0; background: none; min-height: 44px; border-
 .row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
 .control { display: grid; gap: 12px; margin-bottom: 16px; }
-.count { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.count input { position: absolute; opacity: 0; pointer-events: none; }
-.count span {
-  display: grid; place-items: center; min-height: 44px; border-radius: 999px;
-  box-shadow: inset 0 0 0 1px var(--line); font-weight: 600;
-}
-.count input:checked + span { background: var(--text); color: var(--bg); box-shadow: none; }
-.count input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.count { display: grid; gap: 4px; }
+.count-label { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; color: var(--muted); }
+#count-out { font-size: 28px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+#count { width: 100%; height: 44px; margin: 0; accent-color: var(--accent); cursor: pointer; }
 .timer { display: flex; align-items: baseline; gap: 12px; justify-content: center; }
 #timer { font-size: 34px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+
+.progress { display: grid; justify-items: center; gap: 4px; position: relative; }
+.progress svg.ring { width: 120px; height: 120px; transform: rotate(-90deg); }
+.ring circle { fill: none; stroke-width: 10; }
+.ring-bg { stroke: var(--line); }
+.ring-fg {
+  stroke: var(--accent); stroke-linecap: round;
+  stroke-dasharray: 326.73; stroke-dashoffset: 326.73; transition: stroke-dashoffset 900ms var(--ease);
+}
+.ring-pct {
+  position: absolute; top: 0; height: 120px; display: grid; place-items: center;
+  font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -.02em;
+}
+.ring-label { text-align: center; min-height: 1.5em; }
+#last-run { margin: 0; }
+#last-run:empty { display: none; }
 @media (min-width: 760px) {
-  .control { grid-template-columns: 240px 1fr auto; align-items: center; }
+  .control { grid-template-columns: 260px 1fr auto auto; align-items: center; gap: 16px; }
   .big { width: auto; }
   #last-run { grid-column: 1 / -1; }
 }
 
+.actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 16px; }
+.actions .push { margin-left: auto; font-size: 14px; }
+button:disabled { opacity: .5; cursor: not-allowed; }
+
+.insight { background: var(--card); border-radius: var(--radius); padding: 14px 16px; margin: 0 0 16px; }
+.insight h2 { font-size: 17px; margin: 0 0 6px; }
+.insight h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .12em; color: var(--muted); margin: 14px 0 6px; }
+.insight p { margin: 0 0 8px; max-width: 70ch; }
+.findings, .rules { margin: 0; padding-left: 20px; display: grid; gap: 6px; max-width: 70ch; }
+.insight > p.small { margin: 0; }
+
 .tools { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin: 8px 0 12px; }
+.search {
+  flex: 1 1 260px; min-height: 44px; padding: 0 16px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--card); font: inherit; color: inherit;
+}
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.fchip { min-height: 44px; padding: 0 14px; font-size: 14px; box-shadow: inset 0 0 0 1px var(--line); }
+.fchip[aria-pressed="true"] { background: var(--text); color: var(--bg); box-shadow: none; }
 .switch { display: inline-flex; gap: 8px; align-items: center; min-height: 44px; }
 .switch input { width: 18px; height: 18px; accent-color: var(--accent); }
 .notice { background: var(--card); border-radius: var(--radius); padding: 14px 16px; }
@@ -105,6 +135,13 @@ button { cursor: pointer; border: 0; background: none; min-height: 44px; border-
 .chip.new { background: var(--accent); color: var(--on-accent); box-shadow: none; }
 .chip.st { background: var(--text); color: var(--bg); box-shadow: none; }
 .channels { display: flex; gap: 10px; color: var(--muted); }
+.card-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: -4px -6px -6px 0; }
+.card-del {
+  position: relative; z-index: 1; width: 44px; height: 44px; padding: 0; display: grid; place-items: center;
+  color: var(--muted); transition: transform 300ms var(--ease);
+}
+.card-del svg { width: 16px; height: 16px; }
+.card-del:hover { color: var(--hot); transform: rotate(90deg); }
 .pick { position: relative; z-index: 1; display: inline-flex; gap: 6px; align-items: center; min-height: 44px; font-size: 13px; }
 .pick input { width: 18px; height: 18px; accent-color: var(--accent); }
 
@@ -143,6 +180,16 @@ table.bd td.pts { text-align: right; font-variant-numeric: tabular-nums; white-s
 .warn { color: var(--hot); }
 
 label[for="token"] { display: block; margin: 8px 0 6px; }
+label[for="st-note"] { display: block; margin-bottom: 6px; }
+.note {
+  width: 100%; min-height: 64px; padding: 10px 12px; margin-bottom: 10px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--bg); font: inherit; color: inherit; resize: vertical;
+}
+.table-scroll { overflow-x: auto; }
+table.hist { min-width: 560px; }
+table.hist thead td { color: var(--muted); }
+table.hist tfoot td { font-weight: 600; border-bottom: 0; }
+.foot { max-width: 1160px; margin: 8px auto 0; padding: 16px; border-top: 1px solid var(--line); }
 #token { width: 100%; min-height: 44px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
 
 .sendbar {
@@ -158,8 +205,12 @@ label[for="token"] { display: block; margin: 8px 0 6px; }
 .toast {
   position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%); z-index: 10;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 14px;
-  max-width: calc(100% - 32px);
+  max-width: calc(100% - 32px); display: flex; align-items: center; gap: 12px;
 }
-@media (prefers-reduced-motion: reduce) { .card { transition: none; } .card:hover { transform: none; } }
+#toast-act { min-height: 36px; padding: 0 14px; color: var(--bg); box-shadow: inset 0 0 0 1px currentColor; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  .card, .ring-fg, .card-del { transition: none; }
+  .card:hover, .card-del:hover { transform: none; }
+}
 
 .var-count { align-self: center; margin-left: auto; }

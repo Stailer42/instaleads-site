@@ -18,9 +18,17 @@ const state = {
   leads: {}, status: {}, sent: { log: [] }, lastRun: null, emailLimit: 8,
   picked: new Set(), runTimer: null, pollTimer: null, mockupPending: new Set(),
   texts: {}, regenPending: new Set(), openId: null,
+  deleted: { cleared_before: null, ids: {} }, pendingDel: new Set(), delTimer: null,
+  runs: [], insight: null, nicheNames: {}, runId: null, ringMax: 0,
 };
 const VAR_KINDS = ["dm", "followup", "after_yes"];
 const VAR_KEY = "instaleads.var";
+const FU_COPIED_KEY = "instaleads.fucopied";   // який фолоуап копіювали (для висновків тижня)
+const FILTER_KEY = "instaleads.filter";
+const COUNT_KEY = "instaleads.count";
+const NOCONFIRM_KEY = "instaleads.noconfirm";
+const DEFAULT_FILTER = ["new", "wrote", "replied"];   // як раніше: без відмов і клієнтів
+const UNDO_MS = 5000;
 
 /* ---------------------------------------------------------------- утиліти */
 function store(key, value) {
@@ -34,11 +42,26 @@ const token = () => store(TOKEN_KEY) || "";
 function esc(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
-function toast(text) {
-  const t = $("#toast");
-  t.textContent = text; t.hidden = false;
-  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, 3200);
+function toast(text, { action, onAction, ms = 3200 } = {}) {
+  const t = $("#toast"); const btn = $("#toast-act");
+  $("#toast-text").textContent = text;
+  btn.hidden = !action;
+  btn.textContent = action || "";
+  btn.onclick = action ? () => { t.hidden = true; onAction(); } : null;
+  t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, ms);
 }
+function jsonStore(key, fallback) {
+  try { const v = JSON.parse(store(key) || "null"); return v ?? fallback; } catch (_) { return fallback; }
+}
+const fmtUsd = (n) => (typeof n === "number" ? "$" + n.toFixed(2) : "?");
+function fmtTokens(n) {
+  if (typeof n !== "number") return "?";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(".0", "") + "M";
+  if (n >= 1e3) return Math.round(n / 1e3) + "k";
+  return String(n);
+}
+const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 function notice(text) { const n = $("#notice"); n.textContent = text || ""; n.hidden = !text; }
 const daysAgo = (iso) => (Date.now() - new Date(iso).getTime()) / 864e5;
 function kyivDate(d) { return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv" }).format(d); }
@@ -57,6 +80,7 @@ function safeHref(url) { return /^(https:\/\/|tel:|mailto:|viber:\/\/)/i.test(ur
 async function gh(path, opts = {}) {
   if (!token()) throw new Error("Немає токена. Відкрий «Налаштування».");
   const res = await fetch(API + path, {
+    cache: "no-store",   // GitHub шле max-age=60: без цього readJson бере старий sha, і запис падає з 409
     ...opts,
     headers: {
       Authorization: `Bearer ${token()}`,
@@ -103,6 +127,45 @@ async function readOverlays(dir) {
   return out.filter((x) => x && x.id);
 }
 
+/* Читає JSON, змінює mutate(data) і пише з sha; при конфлікті (409/422) перечитує й повторює. */
+async function writeJson(path, fallback, mutate, message) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const { data: raw, sha } = await readJson(path, fallback, { strict: true });
+      const data = mutate(raw ?? structuredClone(fallback)) ?? raw;
+      await gh(repoPath(`/contents/${path}`), {
+        method: "PUT",
+        body: JSON.stringify({ message, content: b64encode(JSON.stringify(data, null, 2) + "\n"), branch: CFG.branch, ...(sha ? { sha } : {}) }),
+      });
+      return data;
+    } catch (e) {
+      if ((e.status === 409 || e.status === 422) && attempt < 3) {
+        await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("Не вдалося записати після 4 спроб");
+}
+
+async function readLatestInsight() {
+  const list = await gh(repoPath(`/contents/data/insights?ref=${CFG.branch}`), { allow404: true });
+  if (!Array.isArray(list)) return null;
+  const files = list.filter((x) => x.type === "file" && /^\d{4}-\d{2}-\d{2}(-\d+)?\.json$/.test(x.name))
+    .sort((a, b) => b.name.localeCompare(a.name, "en", { numeric: true })).slice(0, 3);
+  let first = null;
+  for (const f of files) {   // найсвіжіший; але нерозглянуте proposed важливіше за пізніший skipped
+    const { data } = await readJson(`data/insights/${f.name}`, null);
+    if (!data) continue;
+    const item = { ...data, path: `data/insights/${f.name}` };
+    first = first || item;
+    if (data.status === "proposed") return item;
+    if (data.status !== "skipped") break;
+  }
+  return first;
+}
+
 async function readText(path) {
   return gh(repoPath(`/contents/${path}?ref=${CFG.branch}`), { accept: "application/vnd.github.raw+json", allow404: true });
 }
@@ -115,9 +178,11 @@ async function loadAll() {
   }
   notice("");
   try {
-    const [leads, status, sent, last, cfgText, mocks, texts] = await Promise.all([
+    const [leads, status, sent, last, cfgText, mocks, texts, deleted, runsIdx, insight] = await Promise.all([
       readJson("data/leads.json", {}), readJson("data/status.json", {}), readJson("data/sent.json", { log: [] }),
       readJson("data/last_run.json", null), readText("config.yaml"), readOverlays("mockups"), readOverlays("texts"),
+      readJson("data/deleted.json", { cleared_before: null, ids: {} }), readJson("data/runs_index.json", null),
+      readLatestInsight().catch(() => null),
     ]);
     state.leads = leads.data || {};
     for (const ov of mocks) {           // накладки від workflow mockup
@@ -129,6 +194,12 @@ async function loadAll() {
     state.sent = sent.data || { log: [] };
     state.lastRun = last.data;
     state.emailLimit = parseLimit(cfgText || "");
+    state.nicheNames = parseNiches(cfgText || "");
+    state.deleted = { cleared_before: null, ids: {}, ...(deleted.data || {}) };
+    // до першого пошуку з новим merge.py індексу ще немає: показуємо хоча б останній пошук
+    state.runs = (runsIdx.data && Array.isArray(runsIdx.data.runs)) ? runsIdx.data.runs
+      : (last.data ? [{ ...last.data, excluded: (last.data.excluded || []).length }] : []);
+    state.insight = insight;
     render();
   } catch (e) {
     notice(e.message);
@@ -142,6 +213,22 @@ function parseLimit(yaml) {
   if (wu && kyivDate(new Date()) >= wu) return num("daily_limit_after_warmup") || base;
   return base;
 }
+
+function parseNiches(yaml) {
+  const out = {};
+  for (const m of yaml.matchAll(/\{\s*id:\s*([\w-]+)\s*,[^}]*query:\s*"([^"]+)"/g)) out[m[1]] = m[2];
+  return out;
+}
+
+/* Прибрані в панелі: хрестик (ids) або «Очистити все» (знайдені до cleared_before). Як is_deleted у common.py. */
+function isDeleted(l) {
+  const d = state.deleted || {};
+  if ((d.ids || {})[l.id]) return true;
+  if (!d.cleared_before) return false;
+  const found = new Date(l.found_at || NaN);
+  return isNaN(found) || found <= new Date(d.cleared_before);   // без дати = старий лід, як is_deleted у common.py
+}
+const isVisible = (l) => !isDeleted(l) && !state.pendingDel.has(l.id);
 
 function sentFor(id) { return (state.sent.log || []).filter((r) => r.id === id).pop(); }
 function mailErr(id) { const e = (state.sent.errors || {})[id]; return e ? (e.errors || []).join("; ") : ""; }
@@ -187,6 +274,7 @@ const ICON = {
   refresh: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
   open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
+  x: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
 };
 const CH_NAME = { instagram: "Instagram", telegram: "Telegram", whatsapp: "WhatsApp", viber: "Viber", phone: "Телефон", email: "Email" };
 function chLink(ch, v) {
@@ -202,22 +290,51 @@ function chLink(ch, v) {
 }
 
 /* ---------------------------------------------------------------- рендер */
-function render() {
-  const hideClosed = $("#hide-closed").checked;
-  const onlyFu = $("#only-followup").checked;
-  let list = prioritySort(Object.values(state.leads));
-  const total = list.length;
-  list = list.filter((l) => {
-    const st = effectiveStatus(l.id);
-    if (hideClosed && st && (st.code === "refused" || st.code === "client")) return false;
-    if (onlyFu && !needsFollowup(l.id)) return false;
-    return true;
+/* ---------------------------------------------------------------- фільтр і пошук */
+function getFilter() {
+  const f = jsonStore(FILTER_KEY, DEFAULT_FILTER);
+  return new Set(Array.isArray(f) ? f : DEFAULT_FILTER);
+}
+function setFilter(set) { store(FILTER_KEY, JSON.stringify([...set])); }
+function matchFilter(l, f) {
+  if (!f.size) return true;
+  const st = effectiveStatus(l.id);
+  const code = st ? st.code : null;
+  return (f.has("new") && !code)
+    || (f.has("wrote") && (code === "wrote" || code === "wrote_email"))
+    || (f.has("followup") && needsFollowup(l.id))
+    || (f.has(code) && ["replied", "refused", "client"].includes(code));
+}
+const norm = (s) => String(s ?? "").toLowerCase().replace(/ʼ|’|`/g, "'").trim();
+function matchQuery(l, q) {
+  if (!q) return true;
+  const h = l.contacts?.instagram?.value || "";
+  return [l.name, h, "@" + h, l.city].some((x) => norm(x).includes(q));
+}
+function renderFilterChips() {
+  const f = getFilter();
+  document.querySelectorAll(".fchip").forEach((b) => {
+    if (b.dataset.f === "all") b.setAttribute("aria-pressed", String(!f.size));
+    else b.setAttribute("aria-pressed", String(f.has(b.dataset.f)));
   });
+}
+
+function render() {
+  const f = getFilter();
+  const q = norm($("#q").value).replace(/^@/, "");
+  const all = prioritySort(Object.values(state.leads).filter(isVisible));
+  const total = all.length;
+  const list = all.filter((l) => matchFilter(l, f) && matchQuery(l, q));
+  renderFilterChips();
   $("#counter").textContent = `Показано ${list.length} з ${total}`;
+  $("#btn-clear").disabled = !total;
+  for (const id of state.picked) if (!state.leads[id] || !isVisible(state.leads[id])) state.picked.delete(id);
   const grid = $("#grid");
   grid.innerHTML = "";
   if (!total) {
     grid.innerHTML = '<p class="muted">Лідів ще немає. Натисни «Почати пошук».</p>';
+  } else if (!list.length) {
+    grid.innerHTML = '<p class="muted">Нічого не знайдено. Зміни пошук або фільтр.</p>';
   }
   for (const l of list) grid.appendChild(card(l));
   const lr = state.lastRun;
@@ -226,6 +343,8 @@ function render() {
     : "";
   renderSendbar();
   renderStats();
+  renderAllTime();
+  renderInsight();
 }
 
 function card(l) {
@@ -252,9 +371,13 @@ function card(l) {
       ${needsFollowup(l.id) ? '<span class="chip">Час для фолоуапу</span>' : ""}
       <span class="channels" aria-label="Канали: ${esc(ch.map((c) => CH_NAME[c] || c).join(", "))}">${ch.map((c) => ICON[c] || "").join("")}</span>
     </div>
-    ${canMail ? `<label class="pick"><input type="checkbox" data-pick="${esc(l.id)}" ${state.picked.has(l.id) ? "checked" : ""}> Обрати для листа</label>` : ""}
+    <div class="card-foot">
+      ${canMail ? `<label class="pick"><input type="checkbox" data-pick="${esc(l.id)}" ${state.picked.has(l.id) ? "checked" : ""}> Обрати для листа</label>` : "<span></span>"}
+      <button class="card-del" type="button" aria-label="Видалити ${esc(l.name)}">${ICON.x}</button>
+    </div>
   `;
   el.querySelector(".card-open").addEventListener("click", () => openLead(l.id));
+  el.querySelector(".card-del").addEventListener("click", () => deleteLead(l.id));
   const pick = el.querySelector("[data-pick]");
   if (pick) pick.addEventListener("change", (e) => {
     if (e.target.checked) state.picked.add(l.id); else state.picked.delete(l.id);
@@ -327,8 +450,10 @@ async function onVarClick(e) {
   const n = textList(l, kind).length;
   const i = Math.min(getVarIdx(id, kind), n - 1);
   if (b.dataset.act === "copy") {
-    try { await navigator.clipboard.writeText(box.querySelector(".msg").textContent); toast("Скопійовано"); }
-    catch (_) { toast("Не вдалося скопіювати"); }
+    try {
+      await navigator.clipboard.writeText(box.querySelector(".msg").textContent); toast("Скопійовано");
+      if (kind === "followup") { const m = jsonStore(FU_COPIED_KEY, {}); m[id] = i; store(FU_COPIED_KEY, JSON.stringify(m)); }
+    } catch (_) { toast("Не вдалося скопіювати"); }
   } else if (b.dataset.act === "next") {
     setVarIdx(id, kind, Math.min(i + 1, n - 1)); refreshVar(kind);
   } else if (b.dataset.act === "first") {
@@ -421,6 +546,8 @@ function openLead(id) {
     <h4>Макет</h4>
     ${mock}
     <h4>Статус</h4>
+    <label class="small muted" for="st-note">Що відповіли (необов'язково, для висновків тижня)</label>
+    <textarea id="st-note" class="note" rows="2" maxlength="300" placeholder="Наприклад: дорого, вже є розробник, попросили приклади">${esc(state.status[id]?.note || "")}</textarea>
     <div class="status-row">
       ${["wrote", "replied", "refused", "client"].map((s) => `<button class="ghost" type="button" data-status="${s}" aria-pressed="${!!(st && st.code === s)}">${STATUS[s]}</button>`).join("")}
     </div>
@@ -436,28 +563,126 @@ function openLead(id) {
 }
 
 /* ---------------------------------------------------------------- статуси */
+/* Знімок ознак ліда в status.json: висновки тижня працюють і після видалення ліда з панелі. */
+function leadSnapshot(l) {
+  return {
+    niche: l.niche || null, city: l.city || null, score: l.score ?? null, tier: l.tier || null,
+    followers: l.followers ?? null, young: !!l.young,
+    signals: (l.signals || []).map((x) => x.code).filter(Boolean),
+    channels: Object.keys(l.contacts || {}),
+  };
+}
+/* Текст, який реально пішов: обраний зараз варіант DM і фолоуап, якщо його копіювали. */
+function sentTexts(l) {
+  const dms = textList(l, "dm"); const fus = textList(l, "followup");
+  const dm = dms.length ? dms[Math.min(getVarIdx(l.id, "dm"), dms.length - 1)] : null;
+  const fi = jsonStore(FU_COPIED_KEY, {})[l.id];
+  const fu = Number.isInteger(fi) && fus.length ? fus[Math.min(fi, fus.length - 1)] : null;
+  return { dm, fu };
+}
+
 async function setStatus(id, code) {
-  if (code === "refused" && !confirm("Відмова назавжди: цьому бізнесу більше не пишемо і не шукаємо його. Так?")) return;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    try {
-      const { data, sha } = await readJson("data/status.json", {}, { strict: true });
-      const cur = data[id] || {};
-      data[id] = { status: code, ts: new Date().toISOString(), history: [...(cur.history || []), { status: code, ts: new Date().toISOString() }] };
-      await gh(repoPath("/contents/data/status.json"), {
-        method: "PUT",
-        body: JSON.stringify({ message: `status: ${id} -> ${code}`, content: b64encode(JSON.stringify(data, null, 2) + "\n"), branch: CFG.branch, ...(sha ? { sha } : {}) }),
-      });
-      state.status = data;
-      toast(`Статус: ${STATUS[code]}`);
-      render();
-      openLead(id);
-      return;
-    } catch (e) {
-      if ((e.status === 409 || e.status === 422) && attempt < 3) continue;
-      toast(e.message);
-      return;
-    }
+  if (code === "refused" && !(await confirmBox("Відмова назавжди?", "Цьому бізнесу більше не пишемо і не шукаємо його.", "Так, відмова"))) return;
+  const l = state.leads[id];
+  const note = ($("#st-note")?.value || "").trim().slice(0, 300);
+  const { dm, fu } = l ? sentTexts(l) : {};
+  try {
+    const data = await writeJson("data/status.json", {}, (d) => {
+      const cur = d[id] || {};
+      const ts = new Date().toISOString();
+      const ev = { status: code, ts, ...(note && note !== cur.note ? { note } : {}) };
+      d[id] = {
+        ...cur, status: code, ts, history: [...(cur.history || []), ev],
+        ...(note ? { note } : {}),
+        // перший відправлений DM не перезаписуємо: саме він дав (або не дав) відповідь
+        ...(dm && !cur.dm_text ? { dm_text: dm } : {}),
+        ...(fu && !cur.followup_text ? { followup_text: fu } : {}),
+        ...(l ? { lead: leadSnapshot(l) } : {}),
+      };
+      return d;
+    }, `status: ${id} -> ${code}`);
+    state.status = data;
+    toast(`Статус: ${STATUS[code]}`);
+    render();
+    openLead(id);
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------------------------------------------------------------- підтвердження */
+function confirmBox(title, text, okLabel) {
+  return new Promise((resolve) => {
+    const d = $("#dlg-confirm"); const ok = $("#btn-confirm-ok");
+    $("#confirm-title").textContent = title;
+    $("#confirm-text").textContent = text;
+    ok.textContent = okLabel;
+    d.returnValue = "";
+    const onClose = () => { d.removeEventListener("close", onClose); ok.onclick = null; resolve(d.returnValue === "ok"); };
+    d.addEventListener("close", onClose);
+    ok.onclick = () => d.close("ok");
+    d.showModal();
+  });
+}
+
+/* ---------------------------------------------------------------- видалення */
+// Пише тільки data/deleted.json: leads.json належить workflow, merge.py сам вичистить прибраних.
+async function saveDeleted(mutate, message) {
+  state.deleted = await writeJson("data/deleted.json", { cleared_before: null, ids: {} }, (d) => {
+    d.ids = d.ids || {};
+    mutate(d);
+    return d;
+  }, message);
+}
+
+async function deleteLead(id) {
+  const l = state.leads[id];
+  if (!l) return;
+  if ($("#no-confirm").checked) {
+    state.pendingDel.add(id);
+    render();
+    clearTimeout(state.delTimer);
+    const n = state.pendingDel.size;
+    toast(n > 1 ? `Видалено: ${n}` : `Видалено «${l.name}»`, {
+      action: "Повернути", ms: UNDO_MS,
+      onAction: () => { clearTimeout(state.delTimer); state.pendingDel.clear(); render(); },
+    });
+    state.delTimer = setTimeout(flushDeletes, UNDO_MS);
+    return;
   }
+  if (!(await confirmBox("Видалити акаунт?", `«${l.name}» зникне з панелі. Шукати його знову не будемо, статус лишиться в статистиці.`, "Так, видалити"))) return;
+  try {
+    await saveDeleted((d) => { d.ids[id] = new Date().toISOString(); }, `delete: ${id}`);
+    render();
+    toast("Видалено");
+  } catch (e) { toast(e.message); }
+}
+
+async function flushDeletes() {
+  const ids = [...state.pendingDel];
+  if (!ids.length) return;
+  try {
+    const ts = new Date().toISOString();
+    await saveDeleted((d) => { ids.forEach((x) => { d.ids[x] = ts; }); }, `delete: ${ids.length}`);
+    ids.forEach((x) => state.pendingDel.delete(x));
+    render();
+  } catch (e) {
+    ids.forEach((x) => state.pendingDel.delete(x));   // не записалось: картки повертаються
+    render();
+    toast(`Не видалено: ${e.message}`);
+  }
+}
+
+async function clearAll() {
+  const n = Object.values(state.leads).filter(isVisible).length;
+  if (!n) return;
+  // завжди з підтвердженням, галочка «без підтвердження» стосується тільки хрестика
+  if (!(await confirmBox("Очистити все?", `Прибрати ${n} акаунтів з панелі? Шукати їх знову не будемо. Статуси, історія пошуків і статистика лишаться.`, "Так, очистити"))) return;
+  try {
+    clearTimeout(state.delTimer); state.pendingDel.clear();
+    await saveDeleted((d) => { d.cleared_before = new Date().toISOString(); }, `clear all: ${n}`);
+    state.picked.clear();
+    render();
+    toast("Панель очищено");
+  } catch (e) { toast(e.message); }
 }
 
 /* ---------------------------------------------------------------- запуск workflow і таймер */
@@ -488,14 +713,48 @@ function startTimer(fromMs) {
 
 const RUN_LABEL = { queued: "У черзі", in_progress: "Шукаю…", waiting: "Чекаю", pending: "У черзі", requested: "У черзі" };
 
+/* ---------------------------------------------------------------- кільце прогресу */
+const RING_LEN = 2 * Math.PI * 52;
+function setRing(percent, label) {
+  const p = Math.max(state.ringMax, Math.min(100, Math.round(percent)));   // ніколи не назад
+  state.ringMax = p;
+  const box = $("#progress");
+  box.hidden = false;
+  box.setAttribute("aria-valuenow", String(p));
+  box.setAttribute("aria-valuetext", `${p}%${label ? ", " + label : ""}`);
+  $("#ring-fg").style.strokeDashoffset = String(RING_LEN * (1 - p / 100));
+  $("#ring-pct").textContent = `${p}%`;
+  if (label !== undefined) $("#ring-label").textContent = label;
+}
+function resetRing() { state.ringMax = 0; setRing(0, "Запускаю"); }
+
+// Етап з кроків job, якщо progress.json ще немає (перші секунди або старий workflow)
+const STEP_PCT = [[/Збір кандидатів/, 3, "Збираю в Apify"], [/Claude/, 10, "Claude оцінює"], [/Детерміно|Склонувати|Опублікувати|Збереження|Коміт/, 95, "Зберігаю"]];
+async function pollProgress(runId) {
+  try {
+    const raw = await gh(repoPath("/contents/progress.json?ref=progress"), { accept: "application/vnd.github.raw+json", allow404: true });
+    const pr = raw ? JSON.parse(raw) : null;
+    if (pr && String(pr.run_id) === String(runId) && typeof pr.percent === "number") { setRing(pr.percent, pr.label || ""); return; }
+  } catch (_) { /* нижче запасний варіант */ }
+  try {
+    const jobs = await gh(repoPath(`/actions/runs/${runId}/jobs`));
+    const steps = ((jobs.jobs || [])[0] || {}).steps || [];
+    const cur = steps.find((x) => x.status === "in_progress");
+    const hit = cur && STEP_PCT.find(([re]) => re.test(cur.name));
+    if (hit) setRing(hit[1], hit[2]);
+  } catch (_) { /* тихо: кільце лишається як було */ }
+}
+
 async function watchRun(runId, onDone) {
   clearInterval(state.pollTimer);
+  if (state.runId !== runId) { state.runId = runId; resetRing(); }
   const check = async () => {
     try {
       const run = await gh(repoPath(`/actions/runs/${runId}`));
       if (run.run_started_at) startTimerOnce(new Date(run.run_started_at).getTime());
       if (run.status !== "completed") {
         $("#run-status").textContent = RUN_LABEL[run.status] || run.status;
+        if (run.status === "in_progress") await pollProgress(runId);
         return;
       }
       clearInterval(state.pollTimer);
@@ -503,11 +762,13 @@ async function watchRun(runId, onDone) {
       $("#btn-parse").disabled = false;
       if (run.conclusion === "success") {
         $("#run-status").textContent = "Готово";
+        setRing(100, "Готово");
         await onDone();
       } else if (run.conclusion === "cancelled") {
         $("#run-status").innerHTML = `Скасовано. <a href="${esc(safeHref(run.html_url))}" target="_blank" rel="noopener">Деталі</a>`;
       } else {
         $("#run-status").innerHTML = `Помилка (${esc(run.conclusion)}). <a href="${esc(safeHref(run.html_url))}" target="_blank" rel="noopener">Лог</a>`;
+        $("#ring-label").textContent = "Зупинилось з помилкою";
       }
     } catch (e) { $("#run-status").textContent = e.message; }
   };
@@ -517,10 +778,11 @@ async function watchRun(runId, onDone) {
 function startTimerOnce(ms) { if (startTimerOnce.ms !== ms) { startTimerOnce.ms = ms; startTimer(ms); } }
 
 async function startParse() {
-  const count = document.querySelector('input[name="count"]:checked').value;
+  const count = String(Math.min(30, Math.max(1, parseInt($("#count").value, 10) || 20)));
   const btn = $("#btn-parse");
   btn.disabled = true;
   $("#run-status").textContent = "Запускаю…";
+  state.runId = null; resetRing();
   startTimer(Date.now());
   try {
     const { id } = await dispatch("parse.yml", { count });
@@ -530,6 +792,7 @@ async function startParse() {
   } catch (e) {
     btn.disabled = false;
     clearInterval(state.runTimer);
+    $("#progress").hidden = true;
     $("#run-status").textContent = e.message;
   }
 }
@@ -636,6 +899,110 @@ function renderStats() {
     <table class="bd"><thead><tr><td>Бали</td><td class="pts">Написано</td><td class="pts">Відповіли</td></tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+/* ---------------------------------------------------------------- історія і статистика */
+// «Відповів» або «Клієнт» будь-коли в історії статусу (клієнт спершу відповів)
+function positive(id) {
+  const st = state.status[id];
+  if (!st) return false;
+  return ["replied", "client"].includes(st.status) || (st.history || []).some((h) => ["replied", "client"].includes(h.status));
+}
+function renderHistory() {
+  const runs = [...state.runs].reverse();
+  if (!runs.length) { $("#hist-body").innerHTML = '<p class="muted">Пошуків ще не було.</p>'; return; }
+  const sum = (k) => runs.reduce((a, r) => a + (typeof r[k] === "number" ? r[k] : 0), 0);
+  const anyTok = runs.some((r) => typeof r.claude_tokens === "number");
+  let repTotal = 0;
+  const rows = runs.map((r) => {
+    const ids = r.lead_ids || [];
+    const rep = ids.filter(positive).length;
+    repTotal += rep;
+    const d = new Date(r.run_id).toLocaleString("uk-UA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return `<tr><td>${esc(d)}</td><td class="pts">${esc(r.requested ?? "?")}</td><td class="pts">${esc(r.found ?? "?")}</td>
+      <td class="pts">${esc(r.candidates ?? "?")}</td><td class="pts">${esc(fmtUsd(r.apify_usd))}</td>
+      <td class="pts">${esc(fmtTokens(r.claude_tokens))}</td><td class="pts">${rep}${ids.length ? ` <span class="muted">(${pct(rep, ids.length)}%)</span>` : ""}</td></tr>`;
+  }).join("");
+  const found = sum("found");
+  $("#hist-body").innerHTML = `<table class="bd hist"><thead><tr><td>Коли</td><td class="pts">Просив</td><td class="pts">Знайдено</td>
+    <td class="pts">Без сайту</td><td class="pts">Apify</td><td class="pts">Токени Claude</td><td class="pts">Відповіли</td></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr><td>Разом ${runs.length}</td><td class="pts">${sum("requested")}</td><td class="pts">${found}</td><td class="pts">${sum("candidates")}</td>
+    <td class="pts">${esc(fmtUsd(sum("apify_usd")))}</td><td class="pts">${anyTok ? esc(fmtTokens(sum("claude_tokens"))) : "?"}</td>
+    <td class="pts">${repTotal} <span class="muted">(${pct(repTotal, found)}%)</span></td></tr></tfoot></table>`;
+}
+function renderAllTime() {
+  const box = $("#alltime");
+  const runs = state.runs;
+  box.hidden = !runs.length && !Object.keys(state.status).length;
+  if (box.hidden) return;
+  const found = runs.reduce((a, r) => a + (r.found || 0), 0);
+  const usd = runs.reduce((a, r) => a + (typeof r.apify_usd === "number" ? r.apify_usd : 0), 0);
+  const mailed = new Set((state.sent.log || []).map((r) => r.id));
+  const wrote = new Set([...Object.keys(state.status), ...mailed]).size;
+  const rep = Object.keys(state.status).filter(positive).length;
+  const clients = Object.values(state.status).filter((s) => s.status === "client").length;
+  const refused = Object.values(state.status).filter((s) => s.status === "refused").length;
+  box.textContent = `За весь час: пошуків ${runs.length} / знайдено ${found} / Apify ${fmtUsd(usd)} / `
+    + `написав ${wrote} / відповіли ${rep} (${pct(rep, wrote)}%) / відмов ${refused} / клієнтів ${clients}`;
+}
+
+/* ---------------------------------------------------------------- висновки тижня */
+function renderInsight() {
+  const box = $("#insight");
+  const ins = state.insight;
+  if (!ins) { box.hidden = true; return; }
+  const date = new Date(ins.date + "T12:00:00").toLocaleDateString("uk-UA", { day: "numeric", month: "long" });
+  box.hidden = false;
+  if (ins.status !== "proposed") {
+    const what = { skipped: esc(ins.summary || "мало даних"), applied: "застосовано", rejected: "відхилено" }[ins.status] || esc(ins.status);
+    box.innerHTML = `<p class="small muted">Висновки тижня від ${esc(date)}: ${what}</p>`;
+    return;
+  }
+  const p = ins.proposed || {};
+  const w = (obj, names) => Object.entries(obj || {}).filter(([, v]) => v !== 1)
+    .map(([k, v]) => `${esc(names ? (names[k] || k) : k)} ×${esc(v)}`).join(", ");
+  const nw = w(p.niche_weight, state.nicheNames); const cw = w(p.city_weight);
+  const li = (arr) => (arr || []).map((t) => `<li>${esc(t)}</li>`).join("");
+  box.innerHTML = `
+    <h2>Висновки тижня, ${esc(date)}</h2>
+    <p>${esc(ins.summary)}</p>
+    <ol class="findings">${(ins.findings || []).map((f) => `<li>${esc(f.text)} <span class="muted small">${esc(f.evidence)}</span></li>`).join("")}</ol>
+    <h3>Нові правила</h3>
+    <ul class="rules">
+      ${nw ? `<li>Частіше або рідше шукати ніші: ${nw}</li>` : ""}
+      ${cw ? `<li>Міста: ${cw}</li>` : ""}
+      ${li(p.message_hints)}
+      ${(p.exclude_hints || []).length ? li(p.exclude_hints.map((t) => "Не брати: " + t)) : ""}
+    </ul>
+    <div class="row">
+      <button class="primary" type="button" id="btn-ins-apply">Застосувати правила</button>
+      <button class="ghost" type="button" id="btn-ins-reject">Відхилити</button>
+    </div>
+    <p class="muted small">Застосовані правила підуть у наступні пошуки. Бал рахується як раніше.</p>`;
+  $("#btn-ins-apply").addEventListener("click", () => decideInsight(true));
+  $("#btn-ins-reject").addEventListener("click", () => decideInsight(false));
+}
+async function decideInsight(apply) {
+  const ins = state.insight;
+  if (!ins || ins.status !== "proposed") return;
+  document.querySelectorAll("#insight button").forEach((b) => { b.disabled = true; });
+  try {
+    if (apply) {
+      const p = ins.proposed || {};
+      await writeJson("data/rules.json", {}, (cur) => ({
+        niche_weight: { ...(cur.niche_weight || {}), ...(p.niche_weight || {}) },
+        city_weight: { ...(cur.city_weight || {}), ...(p.city_weight || {}) },
+        message_hints: p.message_hints || [], exclude_hints: p.exclude_hints || [],
+        source: ins.date, applied_at: new Date().toISOString(),
+      }), `rules: висновки ${ins.date}`);
+    }
+    const status = apply ? "applied" : "rejected";
+    await writeJson(ins.path, {}, (d) => ({ ...d, status, decided_at: new Date().toISOString() }), `insights: ${ins.date} ${status}`);
+    state.insight = { ...ins, status };
+    toast(apply ? "Правила застосовано" : "Висновки відхилено");
+  } catch (e) { toast(e.message); }
+  renderInsight();
+}
+
 /* ---------------------------------------------------------------- старт */
 document.addEventListener("click", (e) => {
   const close = e.target.closest("[data-close]");
@@ -645,10 +1012,36 @@ document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (
 $("#lead-body").addEventListener("click", onVarClick);
 $("#btn-settings").addEventListener("click", () => { $("#token").value = token(); $("#dlg-settings").showModal(); });
 $("#form-settings").addEventListener("submit", () => { store(TOKEN_KEY, $("#token").value.trim() || null); loadAll().then(resumeRun); });
-$("#btn-logout").addEventListener("click", () => { store(TOKEN_KEY, null); $("#token").value = ""; state.leads = {}; render(); notice("Токен видалено."); });
+$("#btn-logout").addEventListener("click", () => {
+  store(TOKEN_KEY, null); $("#token").value = "";
+  Object.assign(state, { leads: {}, status: {}, sent: { log: [] }, runs: [], insight: null, lastRun: null });
+  render(); notice("Токен видалено.");
+});
 $("#btn-parse").addEventListener("click", startParse);
-$("#hide-closed").addEventListener("change", render);
-$("#only-followup").addEventListener("change", render);
+$("#btn-clear").addEventListener("click", clearAll);
+$("#btn-history").addEventListener("click", () => { renderHistory(); $("#dlg-history").showModal(); });
+document.querySelector(".filters").addEventListener("click", (e) => {
+  const b = e.target.closest(".fchip");
+  if (!b) return;
+  const f = getFilter();
+  if (b.dataset.f === "all") f.clear();
+  else if (f.has(b.dataset.f)) f.delete(b.dataset.f); else f.add(b.dataset.f);
+  setFilter(f);
+  render();
+});
+$("#q").addEventListener("input", () => { clearTimeout(render.q); render.q = setTimeout(render, 150); });
+{
+  const c = $("#count"); const out = $("#count-out");
+  const saved = parseInt(store(COUNT_KEY), 10);
+  if (saved >= 1 && saved <= 30) c.value = String(saved);
+  const sync = () => { out.textContent = c.value; c.setAttribute("aria-valuetext", `${c.value} бізнесів`); };
+  sync();
+  c.addEventListener("input", sync);
+  c.addEventListener("change", () => store(COUNT_KEY, c.value));
+  const nc = $("#no-confirm");
+  nc.checked = store(NOCONFIRM_KEY) === "1";
+  nc.addEventListener("change", () => store(NOCONFIRM_KEY, nc.checked ? "1" : null));
+}
 $("#btn-send-open").addEventListener("click", openSend);
 $("#btn-send-go").addEventListener("click", goSend);
 
