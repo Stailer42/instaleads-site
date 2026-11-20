@@ -72,6 +72,8 @@ async function gh(path, opts = {}) {
     throw err;
   }
   if (res.status === 204) return null;
+  // сирий файл (config.yaml, json як текст) завжди читаємо як текст: GitHub шле тип "...raw+json"
+  if ((opts.accept || "").includes("raw")) return res.text();
   const ct = res.headers.get("content-type") || "";
   return ct.includes("json") ? res.json() : res.text();
 }
