@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#111214">
+<title>InstaLeads</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23d9603b'/%3E%3Ctext x='32' y='44' font-size='34' text-anchor='middle' fill='white' font-family='sans-serif'%3EL%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="bar">
+  <h1 class="brand">InstaLeads</h1>
+  <button class="ghost" id="btn-settings" type="button" aria-haspopup="dialog">Налаштування</button>
+</header>
+
+<main class="wrap">
+  <section class="control" aria-label="Пошук">
+    <div class="count" role="radiogroup" aria-label="Скільки бізнесів шукати">
+      <label><input type="radio" name="count" value="15"><span>15</span></label>
+      <label><input type="radio" name="count" value="20" checked><span>20</span></label>
+      <label><input type="radio" name="count" value="30"><span>30</span></label>
+    </div>
+    <button class="primary big" id="btn-parse" type="button">Почати пошук</button>
+    <div class="timer" aria-live="polite">
+      <span id="timer">00:00</span>
+      <span id="run-status" class="muted">Готово до пошуку</span>
+    </div>
+    <p class="muted small" id="last-run"></p>
+  </section>
+
+  <section class="tools" aria-label="Фільтри">
+    <label class="switch"><input type="checkbox" id="hide-closed" checked> Сховати відмови й клієнтів</label>
+    <label class="switch"><input type="checkbox" id="only-followup"> Тільки на фолоуап</label>
+    <span class="muted small" id="counter"></span>
+  </section>
+
+  <p class="notice" id="notice" hidden></p>
+  <div class="grid" id="grid" aria-live="polite"></div>
+  <section class="stats" id="stats" hidden></section>
+</main>
+
+<div class="sendbar" id="sendbar" hidden>
+  <span id="send-count"></span>
+  <button class="primary" id="btn-send-open" type="button">Надіслати обрані</button>
+</div>
+
+<dialog id="dlg-lead" class="sheet" aria-labelledby="lead-title">
+  <div class="sheet-head">
+    <h2 id="lead-title"></h2>
+    <button class="icon" type="button" data-close aria-label="Закрити">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <div id="lead-body"></div>
+</dialog>
+
+<dialog id="dlg-settings" class="sheet small-sheet" aria-labelledby="set-title">
+  <div class="sheet-head">
+    <h2 id="set-title">Налаштування</h2>
+    <button class="icon" type="button" data-close aria-label="Закрити">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <form id="form-settings" method="dialog">
+    <label for="token">GitHub токен (fine-grained, тільки репо instaleads: Actions і Contents на запис)</label>
+    <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…">
+    <p class="muted small">Токен зберігається тільки в цьому браузері. На кожному пристрої вводиться окремо.</p>
+    <div class="row">
+      <button class="primary" type="submit">Зберегти</button>
+      <button class="ghost" type="button" id="btn-logout">Видалити токен</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlg-send" class="sheet" aria-labelledby="send-title">
+  <div class="sheet-head">
+    <h2 id="send-title">Надіслати листи</h2>
+    <button class="icon" type="button" data-close aria-label="Закрити">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+    </button>
+  </div>
+  <p id="send-limit" class="muted"></p>
+  <ol id="send-list" class="send-list"></ol>
+  <div class="row">
+    <button class="primary" id="btn-send-go" type="button">Так, надіслати</button>
+    <button class="ghost" type="button" data-close>Скасувати</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" hidden></div>
+<script src="script.js"></script>
+</body>
+</html>
