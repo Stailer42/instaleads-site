@@ -65,6 +65,18 @@ const pct = (a, b) => (b ? Math.round((a / b) * 100) : 0);
 function notice(text) { const n = $("#notice"); n.textContent = text || ""; n.hidden = !text; }
 const daysAgo = (iso) => (Date.now() - new Date(iso).getTime()) / 864e5;
 function kyivDate(d) { return new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Kyiv" }).format(d); }
+/* День тижня і час за Києвом: для статусів і статистики «Коли писати». */
+const DOW = ["пн", "вт", "ср", "чт", "пт", "сб", "нд"];
+const DOW_FULL = ["понеділок", "вівторок", "середа", "четвер", "пʼятниця", "субота", "неділя"];
+const KYIV_PARTS = new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Kyiv", weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+function kyivParts(ts) {
+  const d = new Date(ts);
+  if (!ts || isNaN(d)) return null;
+  const p = Object.fromEntries(KYIV_PARTS.formatToParts(d).map((x) => [x.type, x.value]));
+  return { dow: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].indexOf(p.weekday), hour: Number(p.hour), time: `${p.hour}:${p.minute}`, date: `${p.day}.${p.month}` };
+}
+function whenShort(ts) { const k = kyivParts(ts); return k ? `${DOW[k.dow]} ${k.time}` : ""; }
+function whenLong(ts) { const k = kyivParts(ts); return k ? `${DOW_FULL[k.dow]}, ${k.date}, ${k.time}` : ""; }
 function b64decode(b64) {
   const bin = atob(b64.replace(/\n/g, ""));
   return new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0)));
@@ -240,6 +252,20 @@ function effectiveStatus(id) {
   if (mail) return { code: "wrote_email", ts: mail.ts };
   return null;
 }
+/* Усі зміни статусу ліда разом з надісланим листом, від старих до нових. */
+function statusLog(id) {
+  const cur = state.status[id];
+  const hist = cur ? (cur.history?.length ? cur.history : [{ status: cur.status, ts: cur.ts }]) : [];
+  const ev = hist.map((h) => ({ code: h.status, ts: h.ts }));
+  const m = sentFor(id);
+  if (m) ev.push({ code: "wrote_email", ts: m.ts });
+  return ev.filter((e) => kyivParts(e.ts)).sort((a, b) => new Date(a.ts) - new Date(b.ts));
+}
+/* Коли вперше написав: перший «Написав» або лист. Без нього (одразу «Відповів») час невідомий. */
+function wroteAt(id) {
+  const e = statusLog(id).find((x) => x.code === "wrote" || x.code === "wrote_email");
+  return e ? e.ts : null;
+}
 function needsFollowup(id) {
   const st = effectiveStatus(id);
   return !!st && (st.code === "wrote" || st.code === "wrote_email") && daysAgo(st.ts) >= FOLLOWUP_DAYS;
@@ -343,6 +369,7 @@ function render() {
     : "";
   renderSendbar();
   renderStats();
+  renderWhen();
   renderAllTime();
   renderInsight();
 }
@@ -365,7 +392,7 @@ function card(l) {
     </div>
     <div class="chips">
       ${l.young ? '<span class="chip new">Новий</span>' : ""}
-      ${st ? `<span class="chip st">${esc(STATUS[st.code] || st.code)}</span>` : ""}
+      ${st ? `<span class="chip st">${esc(STATUS[st.code] || st.code)}${kyivParts(st.ts) ? ` / ${esc(whenShort(st.ts))}` : ""}</span>` : ""}
       ${l.mockup_url ? '<span class="chip">Є макет</span>' : ""}
       ${l.needs_review ? '<span class="chip warn">Перевірити текст</span>' : ""}
       ${needsFollowup(l.id) ? '<span class="chip">Час для фолоуапу</span>' : ""}
@@ -551,7 +578,7 @@ function openLead(id) {
     <div class="status-row">
       ${["wrote", "replied", "refused", "client"].map((s) => `<button class="ghost" type="button" data-status="${s}" aria-pressed="${!!(st && st.code === s)}">${STATUS[s]}</button>`).join("")}
     </div>
-    ${st ? `<p class="small muted">${esc(STATUS[st.code] || st.code)}: ${new Date(st.ts).toLocaleString("uk-UA")}</p>` : ""}
+    ${statusLog(id).length ? `<ul class="st-log small muted">${statusLog(id).map((e) => `<li>${esc(STATUS[e.code] || e.code)}: ${esc(whenLong(e.ts))}</li>`).join("")}</ul>` : ""}
     <h4>Чому такий бал</h4>
     ${signals ? `<ul class="signals">${signals}</ul>` : ""}
     <table class="bd"><tbody>${rows}</tbody></table>
@@ -897,6 +924,32 @@ function renderStats() {
   box.hidden = false;
   box.innerHTML = `<h2 class="small muted">Калібрування: відповіді за діапазонами балів (${withSt.length} лідів зі статусом)</h2>
     <table class="bd"><thead><tr><td>Бали</td><td class="pts">Написано</td><td class="pts">Відповіли</td></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+/* ---------------------------------------------------------------- коли писати */
+const HOUR_BANDS = [[0, 9, "до 9"], [9, 12, "9-12"], [12, 15, "12-15"], [15, 18, "15-18"], [18, 21, "18-21"], [21, 24, "після 21"]];
+const WHEN_MIN = 5;
+function renderWhen() {
+  const box = $("#when");
+  // status.json і лист живуть і після видалення ліда, тож рахуємо всіх, кому писав
+  const ids = new Set([...Object.keys(state.status), ...(state.sent.log || []).map((r) => r.id)]);
+  const rows = [...ids].map((id) => ({ k: kyivParts(wroteAt(id)), pos: positive(id) })).filter((r) => r.k);
+  if (rows.length < WHEN_MIN) { box.hidden = true; return; }
+  const table = (title, labels, keyOf) => {
+    const body = labels.map((lab, i) => {
+      const g = rows.filter((r) => keyOf(r.k) === i);
+      const rep = g.filter((r) => r.pos).length;
+      return `<tr><td>${esc(lab)}</td><td class="pts">${g.length}</td><td class="pts">${g.length ? `${rep} <span class="muted">(${pct(rep, g.length)}%)</span>` : ""}</td></tr>`;
+    }).join("");
+    return `<table class="bd"><thead><tr><td>${esc(title)}</td><td class="pts">Написав</td><td class="pts">Відповіли</td></tr></thead><tbody>${body}</tbody></table>`;
+  };
+  box.hidden = false;
+  box.innerHTML = `<h2 class="small muted">Коли писати: день тижня і година першого повідомлення (${rows.length} лідів, час київський)</h2>
+    <div class="when-grid">
+      ${table("День", DOW, (k) => k.dow)}
+      ${table("Година", HOUR_BANDS.map((b) => b[2]), (k) => HOUR_BANDS.findIndex(([lo, hi]) => k.hour >= lo && k.hour < hi))}
+    </div>
+    ${rows.length < 30 ? '<p class="small muted">Поки менше 30 лідів, відсотки ще випадкові.</p>' : ""}`;
 }
 
 /* ---------------------------------------------------------------- історія і статистика */
