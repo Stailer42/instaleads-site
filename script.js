@@ -17,7 +17,10 @@ const $ = (s, r = document) => r.querySelector(s);
 const state = {
   leads: {}, status: {}, sent: { log: [] }, lastRun: null, emailLimit: 8,
   picked: new Set(), runTimer: null, pollTimer: null, mockupPending: new Set(),
+  texts: {}, regenPending: new Set(), openId: null,
 };
+const VAR_KINDS = ["dm", "followup", "after_yes"];
+const VAR_KEY = "instaleads.var";
 
 /* ---------------------------------------------------------------- утиліти */
 function store(key, value) {
@@ -92,11 +95,11 @@ async function readJson(path, fallback, { strict = false } = {}) {
   }
 }
 
-async function readMockups() {
-  const list = await gh(repoPath(`/contents/data/mockups?ref=${CFG.branch}`), { allow404: true });
+async function readOverlays(dir) {
+  const list = await gh(repoPath(`/contents/data/${dir}?ref=${CFG.branch}`), { allow404: true });
   if (!Array.isArray(list)) return [];
   const files = list.filter((f) => f.type === "file" && f.name.endsWith(".json"));
-  const out = await Promise.all(files.map((f) => readJson(`data/mockups/${f.name}`, null).then((r) => r.data).catch(() => null)));
+  const out = await Promise.all(files.map((f) => readJson(`data/${dir}/${f.name}`, null).then((r) => r.data).catch(() => null)));
   return out.filter((x) => x && x.id);
 }
 
@@ -112,14 +115,16 @@ async function loadAll() {
   }
   notice("");
   try {
-    const [leads, status, sent, last, cfgText, mocks] = await Promise.all([
+    const [leads, status, sent, last, cfgText, mocks, texts] = await Promise.all([
       readJson("data/leads.json", {}), readJson("data/status.json", {}), readJson("data/sent.json", { log: [] }),
-      readJson("data/last_run.json", null), readText("config.yaml"), readMockups(),
+      readJson("data/last_run.json", null), readText("config.yaml"), readOverlays("mockups"), readOverlays("texts"),
     ]);
     state.leads = leads.data || {};
     for (const ov of mocks) {           // накладки від workflow mockup
       if (state.leads[ov.id]) Object.assign(state.leads[ov.id], ov);
     }
+    state.texts = {};                   // нові варіанти від workflow regen: дописуються, не замінюють
+    for (const ov of texts) state.texts[ov.id] = ov.variants || {};
     state.status = status.data || {};
     state.sent = sent.data || { log: [] };
     state.lastRun = last.data;
@@ -179,6 +184,7 @@ const ICON = {
   viber: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M9 9.5c.5 2 2.5 4 5 5"/></svg>',
   phone: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/></svg>',
   email: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/></svg>',
   copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>',
   open: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>',
 };
@@ -269,9 +275,105 @@ function copyBtn(text, label) {
   return `<button class="linkbtn" id="${id}" type="button">${ICON.copy}${esc(label)}</button>`;
 }
 
+/* ---------------------------------------------------------------- варіанти текстів */
+function varMap() {
+  try { return JSON.parse(store(VAR_KEY) || "{}") || {}; } catch (_) { return {}; }
+}
+function getVarIdx(id, kind) {
+  const v = varMap()[`${id}|${kind}`];
+  return Number.isInteger(v) && v >= 0 ? v : 0;
+}
+function setVarIdx(id, kind, i) {
+  const m = varMap(); m[`${id}|${kind}`] = i; store(VAR_KEY, JSON.stringify(m));
+}
+function textList(l, kind) {
+  const out = [];
+  const all = [l[kind], ...((l.variants || {})[kind] || []), ...((state.texts[l.id] || {})[kind] || [])];
+  for (const t of all) {
+    if (typeof t === "string" && t.trim() && !out.includes(t.trim())) out.push(t.trim());
+  }
+  return out;
+}
+function textBlock(l, kind) {
+  const list = textList(l, kind);
+  if (!list.length) return `<p class="small muted">Тексту немає.</p>`;
+  const i = Math.min(getVarIdx(l.id, kind), list.length - 1);
+  const last = i >= list.length - 1;
+  const pending = state.regenPending.has(l.id);
+  const more = last
+    ? `<button class="linkbtn" type="button" data-act="regen" ${pending ? "disabled" : ""}>${ICON.refresh}${pending ? "Пишу нові…" : "Нові варіанти"}</button>`
+      + (list.length > 1 ? `<button class="linkbtn" type="button" data-act="first">З початку</button>` : "")
+    : `<button class="linkbtn" type="button" data-act="next">${ICON.refresh}Інший варіант</button>`;
+  return `<div class="var" data-kind="${kind}">
+    <pre class="msg">${esc(list[i])}</pre>
+    <div class="row">
+      <button class="linkbtn" type="button" data-act="copy">${ICON.copy}Копіювати</button>
+      ${more}
+      <span class="muted small var-count">${i + 1} з ${list.length}</span>
+    </div>
+  </div>`;
+}
+function refreshVar(kind) {
+  const l = state.leads[state.openId];
+  const box = $(`#lead-body .var[data-kind="${kind}"]`);
+  if (l && box) box.outerHTML = textBlock(l, kind);
+}
+async function onVarClick(e) {
+  const b = e.target.closest("[data-act]");
+  const box = b && b.closest(".var");
+  if (!box || b.disabled) return;
+  const id = state.openId, kind = box.dataset.kind, l = state.leads[id];
+  if (!l) return;
+  const n = textList(l, kind).length;
+  const i = Math.min(getVarIdx(id, kind), n - 1);
+  if (b.dataset.act === "copy") {
+    try { await navigator.clipboard.writeText(box.querySelector(".msg").textContent); toast("Скопійовано"); }
+    catch (_) { toast("Не вдалося скопіювати"); }
+  } else if (b.dataset.act === "next") {
+    setVarIdx(id, kind, Math.min(i + 1, n - 1)); refreshVar(kind);
+  } else if (b.dataset.act === "first") {
+    setVarIdx(id, kind, 0); refreshVar(kind);
+  } else if (b.dataset.act === "regen") {
+    requestRegen(id);
+  }
+}
+
+async function requestRegen(id) {
+  const l = state.leads[id];
+  const before = Object.fromEntries(VAR_KINDS.map((k) => [k, textList(l, k).length]));
+  state.regenPending.add(id);
+  VAR_KINDS.forEach(refreshVar);
+  const done = (msg) => {
+    state.regenPending.delete(id);
+    if (msg) toast(msg);
+    if ($("#dlg-lead").open && state.openId === id) openLead(id);
+  };
+  try {
+    const { id: runId } = await dispatch("regen.yml", { id });
+    toast("Пишу нові варіанти, це 1-3 хвилини");
+    if (!runId) { done("Запуск пішов. Онови сторінку за кілька хвилин"); return; }
+    const poll = setInterval(async () => {
+      try {
+        const run = await gh(repoPath(`/actions/runs/${runId}`));
+        if (run.status !== "completed") return;
+        clearInterval(poll);
+        if (run.conclusion === "success") {
+          await loadAll();
+          const nl = state.leads[id];
+          if (nl) VAR_KINDS.forEach((k) => { if (textList(nl, k).length > before[k]) setVarIdx(id, k, before[k]); });
+          done("Нові варіанти готові");
+        } else done("Нові варіанти не вдались, дивись лог в Actions");
+      } catch (_) { /* наступна спроба */ }
+    }, 10000);
+  } catch (e) {
+    done(e.message);
+  }
+}
+
 function openLead(id) {
   const l = state.leads[id];
   if (!l) return;
+  state.openId = id;
   const st = effectiveStatus(id);
   $("#lead-title").textContent = `${l.name} / ${l.score}`;
   const ct = l.contacts || {};
@@ -292,6 +394,11 @@ function openLead(id) {
   const mock = l.mockup_url
     ? `<div class="links"><a href="${esc(safeHref(l.mockup_url))}" target="_blank" rel="noopener">${ICON.open}Відкрити макет</a>${copyBtn(l.mockup_url, "Копіювати посилання")}</div>`
     : `<button class="primary" type="button" id="btn-mockup" ${pending ? "disabled" : ""}>${pending ? "Макет робиться…" : "Зробити макет"}</button>`;
+  const after = l.mockup_url && textList(l, "after_yes").length
+    ? textBlock(l, "after_yes")
+    : l.mockup_url
+      ? `<p class="small muted">Скиньте посилання на макет з блоку «Макет» нижче.</p>`
+      : `<p class="small muted">Спершу зробіть макет кнопкою нижче. Текст з посиланням з'явиться тут.</p>`;
   $("#lead-body").innerHTML = `
     ${l.needs_review ? `<p class="warn small">Тексти не пройшли автоперевірку: ${esc((l.review_notes || []).join("; "))}</p>` : ""}
     <dl class="kv">
@@ -304,12 +411,12 @@ function openLead(id) {
     ${l.summary ? `<p>${esc(l.summary)}</p>` : ""}
     <h4>Де написати</h4>
     <div class="links">${links}${l.maps_url ? `<a href="${esc(safeHref(l.maps_url))}" target="_blank" rel="noopener">${ICON.open}Google Maps</a>` : ""}</div>
-    <h4>Повідомлення</h4>
-    <pre class="msg">${esc(l.dm || "")}</pre>
-    <div class="row">${copyBtn(l.dm || "", "Копіювати")}</div>
+    <h4>Перше повідомлення (без посилання)</h4>
+    ${textBlock(l, "dm")}
+    <h4>Якщо відповіли «так»</h4>
+    ${after}
     <h4>Фолоуап (через ${FOLLOWUP_DAYS} дні без відповіді)</h4>
-    <pre class="msg">${esc(l.followup || "")}</pre>
-    <div class="row">${copyBtn(l.followup || "", "Копіювати")}</div>
+    ${textBlock(l, "followup")}
     ${mail}
     <h4>Макет</h4>
     ${mock}
@@ -325,7 +432,7 @@ function openLead(id) {
   $("#lead-body").querySelectorAll("[data-status]").forEach((b) => b.addEventListener("click", () => setStatus(id, b.dataset.status)));
   const mb = $("#btn-mockup");
   if (mb) mb.addEventListener("click", () => requestMockup(id));
-  $("#dlg-lead").showModal();
+  if (!$("#dlg-lead").open) $("#dlg-lead").showModal();
 }
 
 /* ---------------------------------------------------------------- статуси */
@@ -535,6 +642,7 @@ document.addEventListener("click", (e) => {
   if (close) close.closest("dialog").close();
 });
 document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target === d) d.close(); }));
+$("#lead-body").addEventListener("click", onVarClick);
 $("#btn-settings").addEventListener("click", () => { $("#token").value = token(); $("#dlg-settings").showModal(); });
 $("#form-settings").addEventListener("submit", () => { store(TOKEN_KEY, $("#token").value.trim() || null); loadAll().then(resumeRun); });
 $("#btn-logout").addEventListener("click", () => { store(TOKEN_KEY, null); $("#token").value = ""; state.leads = {}; render(); notice("Токен видалено."); });

@@ -161,3 +161,5 @@ label[for="token"] { display: block; margin: 8px 0 6px; }
   max-width: calc(100% - 32px);
 }
 @media (prefers-reduced-motion: reduce) { .card { transition: none; } .card:hover { transform: none; } }
+
+.var-count { align-self: center; margin-left: auto; }
